@@ -52,6 +52,13 @@ function remember(id: string): boolean {
 export function createWebhookHandler(ctx: AppContext) {
   return async (req: Request, res: Response): Promise<void> => {
     try {
+      // Log every inbound hit (before auth) to diagnose delivery/auth issues.
+      logger.info('Inbound webhook', {
+        type: req.body?.type,
+        hasQueryToken: !!req.query.token,
+        hasBearer: !!req.get('authorization'),
+      });
+
       if (!(await isAuthentic(ctx, req))) {
         logger.warn('Rejected webhook with invalid credentials');
         res.status(401).json({ error: 'unauthorized' });
@@ -107,9 +114,13 @@ async function handleMessage(
   }
 
   // A reply only counts when it lands inside a thread the bot created.
-  if (!threadName) return null;
-  const open = await ctx.checkIns.findOpenByThread(threadName);
-  if (!open) return null;
+  const open = threadName ? await ctx.checkIns.findOpenByThread(threadName) : null;
+  if (!open) {
+    // Not a check-in reply (e.g. a direct @mention). Give a short friendly ack
+    // so the interaction never looks unanswered.
+    logger.info('Mention/ack (no active check-in thread)', { senderName, threadName });
+    return "👋 Hi! I'm here. Try /ping or /help 😄";
+  }
 
   // Only the designated employee for this check-in completes the session.
   if (!employee || open.employeeId !== employee.id) {

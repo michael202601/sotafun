@@ -57,6 +57,8 @@ export function createWebhookHandler(ctx: AppContext) {
         type: req.body?.type,
         hasQueryToken: !!req.query.token,
         hasBearer: !!req.get('authorization'),
+        bodyKeys: req.body ? Object.keys(req.body) : [],
+        rawBody: JSON.stringify(req.body ?? {}).slice(0, 1500),
       });
 
       if (!(await isAuthentic(ctx, req))) {

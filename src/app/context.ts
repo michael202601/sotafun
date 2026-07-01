@@ -41,7 +41,12 @@ export class AppContext {
     this.reports = new ReportRepository(this.prisma);
 
     const provider = new ClaudeCodeProvider(this.env);
-    this.ai = new AIService(provider, this.aiHistory, this.env.AI_HISTORY_DAYS);
+    this.ai = new AIService(
+      provider,
+      this.aiHistory,
+      this.env.AI_HISTORY_DAYS,
+      this.env.BOT_LANGUAGE,
+    );
     this.chat = new GoogleChatService(this.env);
   }
 }

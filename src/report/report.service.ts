@@ -146,19 +146,19 @@ export class ReportService {
     },
   ): string {
     const lines = [
-      '📊 Daily Wellness Report',
-      `Date: ${day}`,
-      `Employee: ${name}`,
-      `Check-ins: ${d.total}`,
-      `Responses: ${d.responses}`,
-      `Missed: ${d.misses}`,
-      `Response Rate: ${d.responseRate.toFixed(1)}%`,
-      `Average Response: ${TimeService.formatLeadTime(d.avg)}`,
-      `Fastest: ${TimeService.formatLeadTime(d.fastest)}`,
-      `Slowest: ${TimeService.formatLeadTime(d.longest)}`,
+      '📊 Báo cáo Wellness hằng ngày',
+      `Ngày: ${day}`,
+      `Nhân viên: ${name}`,
+      `Số check-in: ${d.total}`,
+      `Đã trả lời: ${d.responses}`,
+      `Bỏ lỡ: ${d.misses}`,
+      `Tỉ lệ phản hồi: ${d.responseRate.toFixed(1)}%`,
+      `Phản hồi trung bình: ${TimeService.formatLeadTime(d.avg)}`,
+      `Nhanh nhất: ${TimeService.formatLeadTime(d.fastest)}`,
+      `Chậm nhất: ${TimeService.formatLeadTime(d.longest)}`,
     ];
     if (d.aiSummary) {
-      lines.push('', `AI Summary: ${d.aiSummary}`);
+      lines.push('', `Tóm tắt AI: ${d.aiSummary}`);
     }
     return lines.join('\n');
   }

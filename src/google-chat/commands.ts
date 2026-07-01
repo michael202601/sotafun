@@ -19,15 +19,15 @@ export async function handleCommand(
 
   switch (command.toLowerCase()) {
     case 'ping':
-      return '🏓 pong — I am online!';
+      return '🏓 pong — mình đang online!';
 
     case 'help':
       return [
-        'Here is what I can do 😄',
-        '/ping — check I am online',
-        '/status — your current check-in status',
-        '/report — your stats for today',
-        '/skip — skip your next check-in (coming soon)',
+        'Mình có thể giúp bạn 😄',
+        '/ping — kiểm tra mình có online không',
+        '/status — trạng thái check-in hiện tại của bạn',
+        '/report — thống kê hôm nay của bạn',
+        '/skip — bỏ qua lần check-in tới (sắp có)',
       ].join('\n');
 
     case 'status':
@@ -35,33 +35,33 @@ export async function handleCommand(
 
     case 'report':
       // Manager report variants (today/week/month/...) are handled in phase 2.
-      if (arg) return `Report "${arg}" is coming soon 😄`;
+      if (arg) return `Báo cáo "${arg}" sắp ra mắt 😄`;
       return personalReport(ctx, employee);
 
     default:
-      return `Unknown command "/${command}". Try /help 😄`;
+      return `Không rõ lệnh "/${command}". Thử /help nhé 😄`;
   }
 }
 
 async function statusFor(ctx: AppContext, employee: Employee | null): Promise<string> {
-  if (!employee) return 'I could not match you to an employee record.';
+  if (!employee) return 'Mình chưa khớp bạn với hồ sơ nhân viên nào.';
   const open = await ctx.checkIns.findOpenForEmployee(employee.id);
-  if (!open) return 'No active check-in right now. Enjoy the focus time 😄';
-  return `You have an open check-in from ${open.scheduledTime.toISOString()}. Reply any time!`;
+  if (!open) return 'Hiện không có check-in nào đang mở. Tập trung làm việc nhé 😄';
+  return `Bạn đang có một check-in mở từ ${open.scheduledTime.toISOString()}. Trả lời bất cứ lúc nào nhé!`;
 }
 
 async function personalReport(ctx: AppContext, employee: Employee | null): Promise<string> {
-  if (!employee) return 'I could not match you to an employee record.';
+  if (!employee) return 'Mình chưa khớp bạn với hồ sơ nhân viên nào.';
   const day = ctx.time.businessDay();
   const reports = await ctx.reports.findByDate(day);
   const mine = reports.find((r) => r.employeeId === employee.id);
-  if (!mine) return 'No stats yet for today — the day is still young 😄';
+  if (!mine) return 'Hôm nay chưa có thống kê — ngày còn dài mà 😄';
   return [
-    `📊 Your stats for ${day}`,
-    `Check-ins: ${mine.totalCheckIns}`,
-    `Responses: ${mine.responses}`,
-    `Response rate: ${mine.responseRate.toFixed(1)}%`,
-    `Average response: ${TimeService.formatLeadTime(mine.averageLeadTime)}`,
-    'Keep it up! 🎉',
+    `📊 Thống kê của bạn ngày ${day}`,
+    `Số check-in: ${mine.totalCheckIns}`,
+    `Đã trả lời: ${mine.responses}`,
+    `Tỉ lệ phản hồi: ${mine.responseRate.toFixed(1)}%`,
+    `Thời gian phản hồi trung bình: ${TimeService.formatLeadTime(mine.averageLeadTime)}`,
+    'Cố lên nhé! 🎉',
   ].join('\n');
 }

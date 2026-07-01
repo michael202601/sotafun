@@ -37,13 +37,26 @@ function avoidClause(recent: string[]): string {
   return `\nRecently used topics to AVOID repeating: ${recent.join(', ')}.`;
 }
 
+/** Map a language code to a full name for the prompt. Defaults to Vietnamese. */
+function languageName(code: string | undefined): string {
+  switch (code) {
+    case 'en':
+      return 'English';
+    case 'ko':
+      return 'Korean';
+    case 'vi':
+    default:
+      return 'Vietnamese';
+  }
+}
+
 /** Prompt for a fresh check-in message. Returns the picked category too. */
 export function checkInPrompt(ctx: GenerationContext): { prompt: string; category: string } {
   const pool = CATEGORIES.filter((c) => !ctx.recentCategories.includes(c));
   const choices = pool.length ? pool : CATEGORIES;
   // Deterministic-but-varied pick based on recent history length.
   const category = choices[ctx.recentCategories.length % choices.length];
-  const lang = ctx.language === 'ko' ? 'Korean' : 'English';
+  const lang = languageName(ctx.language);
   const prompt = `${PERSONA}
 
 Write a single fresh check-in message in ${lang}.
@@ -57,7 +70,7 @@ Make it original and engaging, and invite a quick reply (a guess, an emoji, or a
 /** Prompt for a reminder at a given escalation level (1 friendly, 2 funny, 3 playful). */
 export function reminderPrompt(level: 1 | 2 | 3, ctx: GenerationContext): string {
   const tone = level === 1 ? 'friendly and gentle' : level === 2 ? 'funny and light' : 'playful';
-  const lang = ctx.language === 'ko' ? 'Korean' : 'English';
+  const lang = languageName(ctx.language);
   return `${PERSONA}
 
 The teammate has not replied yet. Write ONE short ${tone} nudge in ${lang} to gently get their
@@ -66,7 +79,7 @@ attention. Never sound aggressive, never sound like an attendance check. Under 3
 
 /** Prompt for a short natural follow-up after an employee replies. */
 export function followUpPrompt(ctx: GenerationContext): string {
-  const lang = ctx.language === 'ko' ? 'Korean' : 'English';
+  const lang = languageName(ctx.language);
   const convo = (ctx.conversation ?? [])
     .map((m) => `${m.role === 'BOT' ? 'You' : 'Teammate'}: ${m.text}`)
     .join('\n');
@@ -85,7 +98,8 @@ export function dailySummaryPrompt(stats: string): string {
 Base it ONLY on these statistics:
 ${stats}
 
-Write 1-2 upbeat, constructive sentences. Never criticize employees. Output only the summary text.`;
+Write 1-2 upbeat, constructive sentences IN VIETNAMESE. Never criticize employees.
+Output only the summary text.`;
 }
 
 export { CATEGORIES };

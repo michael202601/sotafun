@@ -183,7 +183,7 @@ async function handleMessage(ctx: AppContext, ev: NormalizedEvent): Promise<stri
     // Not a check-in reply (e.g. a direct @mention). Give a short friendly ack
     // so the interaction never looks unanswered.
     logger.info('Mention/ack (no active check-in thread)', { senderUserId, threadName });
-    return "👋 Hi! I'm here. Try /ping or /help 😄";
+    return '👋 Chào bạn! Mình đây. Thử /ping hoặc /help nhé 😄';
   }
 
   // Only the designated employee for this check-in completes the session.

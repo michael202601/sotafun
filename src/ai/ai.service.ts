@@ -12,14 +12,14 @@ const logger = getLogger('claude');
 
 /** Minimal static fallbacks - used only when Claude AND the cache are unavailable. */
 const STATIC_CHECKINS = [
-  '👋 Quick hello! What is one word to describe your day so far? 😄',
-  '☕ Coffee level check — how are you doing right now?',
-  '🧠 Tiny brain break: reply with an emoji that matches your mood!',
+  '👋 Chào bạn! Một từ để tả buổi làm hôm nay của bạn là gì? 😄',
+  '☕ Kiểm tra mức cà phê nào — bạn đang thế nào rồi?',
+  '🧠 Nghỉ não tí xíu: thả một emoji hợp tâm trạng của bạn nhé!',
 ];
 const STATIC_REMINDERS: Record<number, string> = {
-  1: '👀 Still there? No rush 😄',
-  2: 'I think your keyboard dozed off — wake it up 😂',
-  3: 'Last friendly poke before I move on 😆',
+  1: '👀 Còn đó không? Cứ từ từ nhé 😄',
+  2: 'Hình như bàn phím của bạn ngủ quên rồi — đánh thức nó dậy nào 😂',
+  3: 'Chọc nhẹ lần cuối trước khi mình đi nha 😆',
 };
 
 /**
@@ -31,6 +31,7 @@ export class AIService {
     private readonly provider: AIProvider,
     private readonly history: AIHistoryRepository,
     private readonly historyDays: number,
+    private readonly defaultLanguage = 'vi',
     private readonly retries = 2,
   ) {}
 
@@ -55,7 +56,10 @@ export class AIService {
   /** Generate a fresh check-in message, avoiding recent topics. */
   async generateCheckIn(employeeId?: string, language?: string): Promise<GeneratedContent> {
     const recent = await this.history.recent(this.historyDays);
-    const ctx: GenerationContext = { recentCategories: recent.categories, language };
+    const ctx: GenerationContext = {
+      recentCategories: recent.categories,
+      language: language ?? this.defaultLanguage,
+    };
     const { prompt, category } = checkInPrompt(ctx);
 
     const text = await this.tryGenerate(prompt);
@@ -79,7 +83,10 @@ export class AIService {
 
   /** Generate a reminder message at an escalation level. */
   async generateReminder(level: 1 | 2 | 3, language?: string): Promise<string> {
-    const prompt = reminderPrompt(level, { recentCategories: [], language });
+    const prompt = reminderPrompt(level, {
+      recentCategories: [],
+      language: language ?? this.defaultLanguage,
+    });
     const text = await this.tryGenerate(prompt);
     return text ?? STATIC_REMINDERS[level];
   }
@@ -89,7 +96,11 @@ export class AIService {
     conversation: GenerationContext['conversation'],
     language?: string,
   ): Promise<string | null> {
-    const prompt = followUpPrompt({ recentCategories: [], language, conversation });
+    const prompt = followUpPrompt({
+      recentCategories: [],
+      language: language ?? this.defaultLanguage,
+      conversation,
+    });
     return this.tryGenerate(prompt);
   }
 

@@ -29,6 +29,9 @@ const envSchema = z.object({
   CLAUDE_CODE_BIN: z.string().default('claude'),
   CLAUDE_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
 
+  // Default language for generated messages: 'vi' | 'en' | 'ko'.
+  BOT_LANGUAGE: z.string().default('vi'),
+
   TIMEZONE: z.string().default('Asia/Seoul'),
   US_TIMEZONE: z.string().default('America/New_York'),
 

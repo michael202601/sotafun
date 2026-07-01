@@ -10,3 +10,8 @@ data
 database.db
 coverage
 .DS_Store
+
+# Secrets — never commit service account keys
+service-account.json
+sotatoms-*.json
+*-adminsdk-*.json

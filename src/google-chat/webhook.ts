@@ -17,8 +17,12 @@ async function isAuthentic(ctx: AppContext, req: Request): Promise<boolean> {
     if (!bearer) return false;
     return verifyChatJwt(bearer, ctx.env.GOOGLE_CHAT_AUDIENCE);
   }
-  const token = bearer ?? (req.query.token as string | undefined);
-  return token === ctx.env.GOOGLE_CHAT_VERIFICATION_TOKEN;
+  // Static mode: accept when the shared token matches EITHER the query string or
+  // the Authorization header. Google Chat always sends its own Bearer JWT in the
+  // header, so we must not let that override a valid ?token= match.
+  const expected = ctx.env.GOOGLE_CHAT_VERIFICATION_TOKEN;
+  const qToken = req.query.token as string | undefined;
+  return qToken === expected || bearer === expected;
 }
 
 /** Bounded set of processed event/message ids for idempotency. */
@@ -85,7 +89,10 @@ async function handleMessage(
   const message = event.message as Record<string, unknown>;
   const sender = (message.sender ?? {}) as Record<string, unknown>;
   const thread = (message.thread ?? {}) as Record<string, unknown>;
-  const text = (message.text as string) ?? '';
+  // In a space, message.text includes the @mention; argumentText is the text
+  // with the mention stripped — use it so slash commands work when mentioned.
+  const argumentText = (message.argumentText as string) ?? '';
+  const text = (argumentText || (message.text as string) || '').trim();
   const senderName = (sender.name as string) ?? ''; // e.g. users/12345
   const threadName = (thread.name as string) ?? ''; // e.g. spaces/A/threads/C
 

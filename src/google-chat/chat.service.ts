@@ -18,8 +18,32 @@ export interface SentMessage {
  */
 export class GoogleChatService {
   private chat: chat_v1.Chat | null = null;
+  /** Cache of userId -> DM space name to avoid repeated lookups. */
+  private readonly dmCache = new Map<string, string>();
 
   constructor(private readonly env: Env) {}
+
+  /**
+   * Resolve the direct-message space between the bot and a user. Returns null
+   * if no DM exists yet (the user must message the bot once — apps cannot create
+   * a DM proactively without extra permissions).
+   */
+  async findDirectMessage(userId: string): Promise<string | null> {
+    const cached = this.dmCache.get(userId);
+    if (cached) return cached;
+    try {
+      const chat = await this.client();
+      const res = await chat.spaces.findDirectMessage({ name: `users/${userId}` });
+      const name = res.data.name ?? null;
+      if (name) this.dmCache.set(userId, name);
+      return name;
+    } catch (err) {
+      const code = (err as { code?: number }).code;
+      if (code === 404) return null; // no DM yet
+      logger.warn('findDirectMessage failed', { userId, error: (err as Error).message });
+      return null;
+    }
+  }
 
   private async client(): Promise<chat_v1.Chat> {
     if (this.chat) return this.chat;

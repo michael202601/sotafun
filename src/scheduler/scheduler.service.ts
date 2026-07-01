@@ -2,7 +2,6 @@ import cron, { ScheduledTask } from 'node-cron';
 import type { AppContext } from '../app/context';
 import type { CheckIn, Employee } from '@prisma/client';
 import { getLogger } from '../utils/logger';
-import { GoogleChatService } from '../google-chat/chat.service';
 
 const logger = getLogger('scheduler');
 
@@ -69,22 +68,27 @@ export class SchedulerService {
   }
 
   private async openCheckIn(employee: Employee, scheduledTime: Date): Promise<void> {
+    if (!employee.googleChatUserId) return; // cannot DM without a user id
     if (await this.ctx.checkIns.existsForSlot(employee.id, scheduledTime)) return;
+
+    // Check-ins go to the employee's DM so they can reply naturally (no @mention).
+    const dmSpace = await this.ctx.chat.findDirectMessage(employee.googleChatUserId);
+    if (!dmSpace) {
+      // The employee must message the bot once to open the DM. Don't create an
+      // orphan check-in until we have somewhere to send it.
+      logger.info('Skip check-in: no DM with employee yet', { employee: employee.name });
+      return;
+    }
+
     const checkIn = await this.ctx.checkIns.createForSlot(employee.id, scheduledTime);
     if (!checkIn) return; // race -> already created
 
     try {
       const content = await this.ctx.ai.generateCheckIn(employee.id);
-      // Mention the designated employee so they know the check-in is for them.
-      const mention = GoogleChatService.mention(employee.googleChatUserId, employee.name);
-      const text = `${mention} ${content.message}`;
-      const sent = await this.ctx.chat.sendNewThread(
-        this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE,
-        text,
-      );
+      const sent = await this.ctx.chat.sendNewThread(dmSpace, content.message);
       await this.ctx.checkIns.markSent(checkIn.id, sent.messageId, sent.threadId);
-      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', text);
-      logger.info('Check-in sent', { employee: employee.name, category: content.category });
+      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', content.message);
+      logger.info('Check-in sent (DM)', { employee: employee.name, category: content.category });
     } catch (err) {
       logger.error('Failed to send check-in', {
         employee: employee.name,
@@ -136,23 +140,20 @@ export class SchedulerService {
   private async sendReminder(checkIn: CheckIn, level: 1 | 2 | 3): Promise<void> {
     // Reserve the slot first (unique constraint) to guarantee no duplicates,
     // even across restarts or overlapping ticks.
-    const body = await this.ctx.ai.generateReminder(level);
+    const message = await this.ctx.ai.generateReminder(level);
     const employee = await this.ctx.employees.findById(checkIn.employeeId);
-    const mention = employee
-      ? GoogleChatService.mention(employee.googleChatUserId, employee.name)
-      : '';
-    const message = mention ? `${mention} ${body}` : body;
+    const dmSpace = employee?.googleChatUserId
+      ? await this.ctx.chat.findDirectMessage(employee.googleChatUserId)
+      : null;
 
     const reserved = await this.ctx.checkIns.addReminder(checkIn.id, level, message);
     if (!reserved) return; // already sent
 
     try {
-      if (checkIn.conversationId) {
-        await this.ctx.chat.replyInThread(
-          this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE,
-          checkIn.conversationId,
-          message,
-        );
+      if (dmSpace) {
+        // Reply in the same DM thread as the check-in (falls back to a new
+        // message when the DM is unthreaded).
+        await this.ctx.chat.replyInThread(dmSpace, checkIn.conversationId ?? '', message);
       }
       await this.ctx.checkIns.setState(checkIn.id, `REMINDER_${level}` as const);
       await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', message);

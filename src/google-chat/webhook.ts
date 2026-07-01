@@ -102,10 +102,18 @@ interface NormalizedEvent {
   text: string;
   /** Sender id without the "users/" prefix. */
   senderUserId: string;
+  /** True if the sender is a human (not another app/bot). */
+  isHuman: boolean;
+  /** True if the message is in a 1:1 direct message space. */
+  isDm: boolean;
   /** Thread resource name, if any. */
   threadName: string;
   /** Message resource name, for dedupe. */
   messageName: string;
+}
+
+function spaceIsDm(space: Record<string, unknown>): boolean {
+  return asStr(space.type) === 'DM' || asStr(space.spaceType) === 'DIRECT_MESSAGE';
 }
 
 function asStr(v: unknown): string {
@@ -127,6 +135,7 @@ function normalizeEvent(event: Record<string, unknown>): NormalizedEvent {
     const payload = chat.messagePayload as Record<string, unknown> | undefined;
     const message = (payload?.message ?? {}) as Record<string, unknown>;
     const user = (chat.user ?? {}) as Record<string, unknown>;
+    const space = (payload?.space ?? {}) as Record<string, unknown>;
     const thread = (message.thread ?? {}) as Record<string, unknown>;
     const messageSender = (message.sender ?? {}) as Record<string, unknown>;
     const text = (asStr(message.argumentText) || asStr(message.text)).trim();
@@ -135,6 +144,8 @@ function normalizeEvent(event: Record<string, unknown>): NormalizedEvent {
       isMessage: !!payload?.message,
       text,
       senderUserId: stripUser(asStr(user.name) || asStr(messageSender.name)),
+      isHuman: asStr(user.type) === 'HUMAN' || asStr(user.type) === '',
+      isDm: spaceIsDm(space),
       threadName: asStr(thread.name),
       messageName: asStr(message.name),
     };
@@ -142,6 +153,7 @@ function normalizeEvent(event: Record<string, unknown>): NormalizedEvent {
 
   const message = (event.message ?? {}) as Record<string, unknown>;
   const sender = (message.sender ?? {}) as Record<string, unknown>;
+  const space = (event.space ?? {}) as Record<string, unknown>;
   const thread = (message.thread ?? {}) as Record<string, unknown>;
   const text = (asStr(message.argumentText) || asStr(message.text)).trim();
   return {
@@ -149,6 +161,8 @@ function normalizeEvent(event: Record<string, unknown>): NormalizedEvent {
     isMessage: event.type === 'MESSAGE' && !!event.message,
     text,
     senderUserId: stripUser(asStr(sender.name)),
+    isHuman: asStr(sender.type) === 'HUMAN' || asStr(sender.type) === '',
+    isDm: spaceIsDm(space),
     threadName: asStr(thread.name),
     messageName: asStr(message.name),
   };
@@ -171,9 +185,40 @@ function emptyReply(_kind: EventKind): Record<string, unknown> {
   return {};
 }
 
+/** Best-effort short AI reply, capped so Google Chat never times out. */
+async function aiReply(ctx: AppContext, text: string): Promise<string | null> {
+  if (!text) return null;
+  return withTimeout(
+    ctx.ai.generateFollowUp([{ role: 'EMPLOYEE', text }]),
+    MENTION_AI_TIMEOUT_MS,
+  );
+}
+
+/** Mark a check-in responded and return a short natural acknowledgment. */
+async function completeCheckIn(
+  ctx: AppContext,
+  checkInId: string,
+  employeeName: string,
+  text: string,
+): Promise<string> {
+  const updated = await ctx.checkIns.markResponded(checkInId, new Date());
+  if (updated) {
+    await ctx.checkIns.addMessage(checkInId, 'EMPLOYEE', text);
+    logger.info('Employee replied', {
+      employee: employeeName,
+      leadTimeSeconds: updated.leadTimeSeconds,
+    });
+  }
+  return (await aiReply(ctx, text)) ?? 'Cảm ơn bạn đã phản hồi nha 😄';
+}
+
 /** Process a normalized MESSAGE event; returns an optional synchronous reply. */
 async function handleMessage(ctx: AppContext, ev: NormalizedEvent): Promise<string | null> {
-  const { text, senderUserId, threadName } = ev;
+  const { text, senderUserId, threadName, isDm, isHuman } = ev;
+
+  // Safety: never respond to other apps/bots (or to ourselves) — prevents loops.
+  if (!isHuman) return null;
+
   const employee = senderUserId ? await ctx.employees.findByChatUserId(senderUserId) : null;
 
   // Slash commands take priority.
@@ -183,37 +228,27 @@ async function handleMessage(ctx: AppContext, ev: NormalizedEvent): Promise<stri
     return commandReply;
   }
 
-  // A reply only counts when it lands inside a thread the bot created.
-  const open = threadName ? await ctx.checkIns.findOpenByThread(threadName) : null;
-  if (!open) {
-    // Not a check-in reply (e.g. a direct @mention): reply naturally with AI,
-    // but cap the wait so Google Chat never times out; fall back to a friendly line.
-    logger.info('Mention -> AI reply', { senderUserId, threadName });
-    if (text) {
-      const aiReply = await withTimeout(
-        ctx.ai.generateFollowUp([{ role: 'EMPLOYEE', text }]),
-        MENTION_AI_TIMEOUT_MS,
-      );
-      if (aiReply) return aiReply;
+  // Direct message: the employee just replies naturally — no @mention, no thread.
+  if (isDm) {
+    if (employee) {
+      const open = await ctx.checkIns.findOpenForEmployee(employee.id);
+      if (open) return completeCheckIn(ctx, open.id, employee.name, text);
     }
-    return '👋 Chào bạn! Mình đây. Thử /ping hoặc /help nhé 😄';
+    logger.info('DM chat -> AI reply', { senderUserId });
+    return (await aiReply(ctx, text)) ?? '👋 Chào bạn! Mình đây 😄';
   }
 
-  // Only the designated employee for this check-in completes the session.
+  // In a space, a reply counts only inside the bot's check-in thread (legacy).
+  const open = threadName ? await ctx.checkIns.findOpenByThread(threadName) : null;
+  if (!open) {
+    // Direct @mention in a space -> natural AI reply.
+    logger.info('Mention -> AI reply', { senderUserId });
+    return (await aiReply(ctx, text)) ?? '👋 Chào bạn! Mình đây. Thử /ping hoặc /help nhé 😄';
+  }
   if (!employee || open.employeeId !== employee.id) {
     await ctx.checkIns.addMessage(open.id, 'SYSTEM', `Ignored reply from users/${senderUserId}`);
     logger.info('Ignored non-designated reply in thread', { threadName, senderUserId });
     return null;
   }
-
-  const updated = await ctx.checkIns.markResponded(open.id, new Date());
-  if (updated) {
-    await ctx.checkIns.addMessage(open.id, 'EMPLOYEE', text);
-    logger.info('Employee replied', {
-      employee: employee.name,
-      leadTimeSeconds: updated.leadTimeSeconds,
-    });
-  }
-  // No synchronous reply here; follow-ups are generated asynchronously in phase 2.
-  return null;
+  return completeCheckIn(ctx, open.id, employee.name, text);
 }

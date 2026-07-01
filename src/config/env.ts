@@ -18,6 +18,9 @@ const envSchema = z.object({
   GOOGLE_CHAT_EMPLOYEE_SPACE: z.string().min(1),
   GOOGLE_CHAT_MANAGER_SPACE: z.string().min(1),
   GOOGLE_CHAT_VERIFICATION_TOKEN: z.string().min(1),
+  // Google Cloud project number. When set, inbound webhooks are verified via the
+  // Google-issued JWT (production). When empty, the static token above is used.
+  GOOGLE_CHAT_AUDIENCE: z.string().optional(),
 
   CLAUDE_CODE_ENABLED: z
     .enum(['true', 'false'])

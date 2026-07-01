@@ -42,6 +42,31 @@ volume; logs, cache and backups are mounted too.
   `~/.claude` into the container so the CLI reuses it. Override the host path via
   `CLAUDE_CONFIG_DIR` if needed.
 
+### Register a designated employee
+
+The bot tracks specific **designated** people, not everyone in the space. A reply
+only counts toward lead time when it comes from the designated person **inside the
+thread the bot created**. Register them by email (idempotent — re-run to update):
+
+```bash
+# in the container: docker compose exec wellness-bot node dist/scripts/add-employee.js ...
+npm run add-employee -- --name "Kyle Ngo" --email kyle.ngo@sotatek.com \
+  [--chatUserId 1234567890] [--timezone Asia/Seoul] \
+  [--workStart 02:00] [--workEnd 11:00] [--lunchStart 04:00] [--lunchEnd 05:00] [--disabled]
+```
+
+`--chatUserId` is the Google Chat user id (`users/<id>`), known once the person is
+in the space. It is required for reply matching and mentions; fill it in later by
+re-running with the same `--email`.
+
+### Webhook authentication
+
+- **Production**: set `GOOGLE_CHAT_AUDIENCE` to your Google Cloud **project number**.
+  Inbound requests are then verified against the Google-signed Bearer JWT
+  (issuer `chat@system.gserviceaccount.com`, audience, expiry and signature).
+- **Local/dev**: leave `GOOGLE_CHAT_AUDIENCE` empty and use the static
+  `GOOGLE_CHAT_VERIFICATION_TOKEN`, appended to the App URL as `?token=...`.
+
 ## Local development
 
 ```bash

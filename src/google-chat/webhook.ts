@@ -2,8 +2,24 @@ import type { Request, Response } from 'express';
 import type { AppContext } from '../app/context';
 import { getLogger } from '../utils/logger';
 import { handleCommand } from './commands';
+import { verifyChatJwt } from './auth';
 
 const logger = getLogger('google-chat');
+
+/**
+ * Authenticate an inbound request. In production (GOOGLE_CHAT_AUDIENCE set) the
+ * Google-issued Bearer JWT is verified. Otherwise a static shared token is
+ * accepted (Authorization: Bearer <token> or ?token=<token>) for local testing.
+ */
+async function isAuthentic(ctx: AppContext, req: Request): Promise<boolean> {
+  const bearer = req.get('authorization')?.replace(/^Bearer\s+/i, '');
+  if (ctx.env.GOOGLE_CHAT_AUDIENCE) {
+    if (!bearer) return false;
+    return verifyChatJwt(bearer, ctx.env.GOOGLE_CHAT_AUDIENCE);
+  }
+  const token = bearer ?? (req.query.token as string | undefined);
+  return token === ctx.env.GOOGLE_CHAT_VERIFICATION_TOKEN;
+}
 
 /** Bounded set of processed event/message ids for idempotency. */
 const processed = new Set<string>();
@@ -32,9 +48,8 @@ function remember(id: string): boolean {
 export function createWebhookHandler(ctx: AppContext) {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      const token = req.get('authorization')?.replace(/^Bearer\s+/i, '') ?? req.query.token;
-      if (token !== ctx.env.GOOGLE_CHAT_VERIFICATION_TOKEN) {
-        logger.warn('Rejected webhook with invalid token');
+      if (!(await isAuthentic(ctx, req))) {
+        logger.warn('Rejected webhook with invalid credentials');
         res.status(401).json({ error: 'unauthorized' });
         return;
       }

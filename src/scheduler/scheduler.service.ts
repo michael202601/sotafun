@@ -2,6 +2,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import type { AppContext } from '../app/context';
 import type { CheckIn, Employee } from '@prisma/client';
 import { getLogger } from '../utils/logger';
+import { GoogleChatService } from '../google-chat/chat.service';
 
 const logger = getLogger('scheduler');
 
@@ -13,6 +14,8 @@ const logger = getLogger('scheduler');
 export class SchedulerService {
   private task: ScheduledTask | null = null;
   private running = false;
+  /** Business day the session-start prompt was already posted for. */
+  private sessionStartDay: string | null = null;
 
   constructor(
     private readonly ctx: AppContext,
@@ -37,6 +40,7 @@ export class SchedulerService {
     if (this.running) return;
     this.running = true;
     try {
+      await this.maybeRunSessionStart();
       await this.createDueCheckIns(now);
       await this.processReminders(now);
       await this.maybeRunReport(now);
@@ -164,6 +168,45 @@ export class SchedulerService {
         level,
         error: (err as Error).message,
       });
+    }
+  }
+
+  // --- Session start: onboard employees without a DM --------------------
+
+  /**
+   * At the start of the work session, post one message to the shared group that
+   * @mentions any enabled employee who has not opened a DM with the bot yet,
+   * asking them to message it once so check-ins can be delivered privately.
+   */
+  private async maybeRunSessionStart(): Promise<void> {
+    const business = this.ctx.time.nowBusiness();
+    if (business.toFormat('HH:mm') !== this.ctx.env.WORK_START) return;
+    if (this.ctx.time.isUsWeekend()) return;
+
+    const day = business.toFormat('yyyy-MM-dd');
+    if (this.sessionStartDay === day) return; // already posted today
+    this.sessionStartDay = day;
+
+    const employees = await this.ctx.employees.listEnabled();
+    const missing: Employee[] = [];
+    for (const employee of employees) {
+      if (!employee.googleChatUserId) continue;
+      const dm = await this.ctx.chat.findDirectMessage(employee.googleChatUserId);
+      if (!dm) missing.push(employee);
+    }
+    if (!missing.length) return;
+
+    const mentions = missing
+      .map((e) => GoogleChatService.mention(e.googleChatUserId, e.name))
+      .join(' ');
+    const text =
+      `🌅 Chào buổi làm việc mới! ${mentions} ơi, để mình gửi check-in riêng cho bạn, ` +
+      `bạn nhắn cho mình (Lisa) một tin bất kỳ trong chat riêng nhé — chỉ cần 1 lần thôi 😄`;
+    try {
+      await this.ctx.chat.sendNewThread(this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE, text);
+      logger.info('Posted session-start DM prompt', { count: missing.length });
+    } catch (err) {
+      logger.error('Failed to post session-start prompt', { error: (err as Error).message });
     }
   }
 

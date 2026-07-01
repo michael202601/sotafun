@@ -51,7 +51,19 @@ export class CheckInRepository {
     );
   }
 
-  /** Latest OPEN check-in for an employee (used to attach a reply). */
+  /** OPEN check-in owning a given Google Chat thread (used to attach a reply). */
+  async findOpenByThread(conversationId: string): Promise<CheckIn | null> {
+    return withRetry(
+      () =>
+        this.prisma.checkIn.findFirst({
+          where: { conversationId, status: 'OPEN' },
+          orderBy: { scheduledTime: 'desc' },
+        }),
+      'checkIn.findOpenByThread',
+    );
+  }
+
+  /** Latest OPEN check-in for an employee (used by the /status command). */
   async findOpenForEmployee(employeeId: string): Promise<CheckIn | null> {
     return withRetry(
       () =>

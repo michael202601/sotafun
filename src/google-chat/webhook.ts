@@ -69,8 +69,10 @@ async function handleMessage(
 ): Promise<string | null> {
   const message = event.message as Record<string, unknown>;
   const sender = (message.sender ?? {}) as Record<string, unknown>;
+  const thread = (message.thread ?? {}) as Record<string, unknown>;
   const text = (message.text as string) ?? '';
   const senderName = (sender.name as string) ?? ''; // e.g. users/12345
+  const threadName = (thread.name as string) ?? ''; // e.g. spaces/A/threads/C
 
   const chatUserId = senderName.startsWith('users/') ? senderName.slice('users/'.length) : senderName;
   const employee = chatUserId ? await ctx.employees.findByChatUserId(chatUserId) : null;
@@ -82,19 +84,25 @@ async function handleMessage(
     return commandReply;
   }
 
-  // Otherwise treat as a check-in reply.
-  if (employee) {
-    const open = await ctx.checkIns.findOpenForEmployee(employee.id);
-    if (open) {
-      const updated = await ctx.checkIns.markResponded(open.id, new Date());
-      if (updated) {
-        await ctx.checkIns.addMessage(open.id, 'EMPLOYEE', text);
-        logger.info('Employee replied', {
-          employee: employee.name,
-          leadTimeSeconds: updated.leadTimeSeconds,
-        });
-      }
-    }
+  // A reply only counts when it lands inside a thread the bot created.
+  if (!threadName) return null;
+  const open = await ctx.checkIns.findOpenByThread(threadName);
+  if (!open) return null;
+
+  // Only the designated employee for this check-in completes the session.
+  if (!employee || open.employeeId !== employee.id) {
+    await ctx.checkIns.addMessage(open.id, 'SYSTEM', `Ignored reply from ${senderName}`);
+    logger.info('Ignored non-designated reply in thread', { threadName, senderName });
+    return null;
+  }
+
+  const updated = await ctx.checkIns.markResponded(open.id, new Date());
+  if (updated) {
+    await ctx.checkIns.addMessage(open.id, 'EMPLOYEE', text);
+    logger.info('Employee replied', {
+      employee: employee.name,
+      leadTimeSeconds: updated.leadTimeSeconds,
+    });
   }
   // No synchronous reply here; follow-ups are generated asynchronously in phase 2.
   return null;

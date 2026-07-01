@@ -2,6 +2,7 @@ import cron, { ScheduledTask } from 'node-cron';
 import type { AppContext } from '../app/context';
 import type { CheckIn, Employee } from '@prisma/client';
 import { getLogger } from '../utils/logger';
+import { GoogleChatService } from '../google-chat/chat.service';
 
 const logger = getLogger('scheduler');
 
@@ -74,12 +75,15 @@ export class SchedulerService {
 
     try {
       const content = await this.ctx.ai.generateCheckIn(employee.id);
+      // Mention the designated employee so they know the check-in is for them.
+      const mention = GoogleChatService.mention(employee.googleChatUserId, employee.name);
+      const text = `${mention} ${content.message}`;
       const sent = await this.ctx.chat.sendNewThread(
         this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE,
-        content.message,
+        text,
       );
       await this.ctx.checkIns.markSent(checkIn.id, sent.messageId, sent.threadId);
-      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', content.message);
+      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', text);
       logger.info('Check-in sent', { employee: employee.name, category: content.category });
     } catch (err) {
       logger.error('Failed to send check-in', {
@@ -132,7 +136,13 @@ export class SchedulerService {
   private async sendReminder(checkIn: CheckIn, level: 1 | 2 | 3): Promise<void> {
     // Reserve the slot first (unique constraint) to guarantee no duplicates,
     // even across restarts or overlapping ticks.
-    const message = await this.ctx.ai.generateReminder(level);
+    const body = await this.ctx.ai.generateReminder(level);
+    const employee = await this.ctx.employees.findById(checkIn.employeeId);
+    const mention = employee
+      ? GoogleChatService.mention(employee.googleChatUserId, employee.name)
+      : '';
+    const message = mention ? `${mention} ${body}` : body;
+
     const reserved = await this.ctx.checkIns.addReminder(checkIn.id, level, message);
     if (!reserved) return; // already sent
 

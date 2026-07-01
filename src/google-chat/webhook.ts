@@ -52,36 +52,32 @@ function remember(id: string): boolean {
 export function createWebhookHandler(ctx: AppContext) {
   return async (req: Request, res: Response): Promise<void> => {
     try {
-      // Log every inbound hit (before auth) to diagnose delivery/auth issues.
-      logger.info('Inbound webhook', {
-        type: req.body?.type,
-        hasQueryToken: !!req.query.token,
-        hasBearer: !!req.get('authorization'),
-        bodyKeys: req.body ? Object.keys(req.body) : [],
-        rawBody: JSON.stringify(req.body ?? {}).slice(0, 1500),
-      });
-
       if (!(await isAuthentic(ctx, req))) {
         logger.warn('Rejected webhook with invalid credentials');
         res.status(401).json({ error: 'unauthorized' });
         return;
       }
 
-      const event = req.body ?? {};
-      if (event.type !== 'MESSAGE' || !event.message) {
-        res.status(200).json({});
+      const event = (req.body ?? {}) as Record<string, unknown>;
+      const norm = normalizeEvent(event);
+      logger.info('Inbound webhook', {
+        kind: norm.kind,
+        isMessage: norm.isMessage,
+        hasText: !!norm.text,
+      });
+
+      if (!norm.isMessage) {
+        res.status(200).json(emptyReply(norm.kind));
         return;
       }
-
-      const messageName: string = event.message.name ?? '';
-      if (messageName && !remember(messageName)) {
+      if (norm.messageName && !remember(norm.messageName)) {
         // Duplicate delivery — ignore, but acknowledge.
-        res.status(200).json({});
+        res.status(200).json(emptyReply(norm.kind));
         return;
       }
 
-      const reply = await handleMessage(ctx, event);
-      res.status(200).json(reply ? { text: reply } : {});
+      const reply = await handleMessage(ctx, norm);
+      res.status(200).json(formatReply(norm.kind, reply));
     } catch (err) {
       logger.error('Webhook processing error', { error: (err as Error).message });
       // Never surface internal errors to Google Chat.
@@ -90,23 +86,89 @@ export function createWebhookHandler(ctx: AppContext) {
   };
 }
 
-/** Process a MESSAGE event; returns an optional synchronous reply text. */
-async function handleMessage(
-  ctx: AppContext,
-  event: Record<string, unknown>,
-): Promise<string | null> {
-  const message = event.message as Record<string, unknown>;
+type EventKind = 'addon' | 'classic';
+
+/** A Google Chat event normalized across the classic and add-on payload shapes. */
+interface NormalizedEvent {
+  kind: EventKind;
+  isMessage: boolean;
+  /** Command/answer text with any @mention stripped. */
+  text: string;
+  /** Sender id without the "users/" prefix. */
+  senderUserId: string;
+  /** Thread resource name, if any. */
+  threadName: string;
+  /** Message resource name, for dedupe. */
+  messageName: string;
+}
+
+function asStr(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function stripUser(name: string): string {
+  return name.startsWith('users/') ? name.slice('users/'.length) : name;
+}
+
+/**
+ * Normalize both event formats:
+ *  - Google Workspace add-on (gsuiteaddons): { chat: { user, messagePayload: { message, space } } }
+ *  - Classic Chat app (App URL):             { type: 'MESSAGE', message: { sender, ... } }
+ */
+function normalizeEvent(event: Record<string, unknown>): NormalizedEvent {
+  const chat = event.chat as Record<string, unknown> | undefined;
+  if (chat) {
+    const payload = chat.messagePayload as Record<string, unknown> | undefined;
+    const message = (payload?.message ?? {}) as Record<string, unknown>;
+    const user = (chat.user ?? {}) as Record<string, unknown>;
+    const thread = (message.thread ?? {}) as Record<string, unknown>;
+    const messageSender = (message.sender ?? {}) as Record<string, unknown>;
+    const text = (asStr(message.argumentText) || asStr(message.text)).trim();
+    return {
+      kind: 'addon',
+      isMessage: !!payload?.message,
+      text,
+      senderUserId: stripUser(asStr(user.name) || asStr(messageSender.name)),
+      threadName: asStr(thread.name),
+      messageName: asStr(message.name),
+    };
+  }
+
+  const message = (event.message ?? {}) as Record<string, unknown>;
   const sender = (message.sender ?? {}) as Record<string, unknown>;
   const thread = (message.thread ?? {}) as Record<string, unknown>;
-  // In a space, message.text includes the @mention; argumentText is the text
-  // with the mention stripped — use it so slash commands work when mentioned.
-  const argumentText = (message.argumentText as string) ?? '';
-  const text = (argumentText || (message.text as string) || '').trim();
-  const senderName = (sender.name as string) ?? ''; // e.g. users/12345
-  const threadName = (thread.name as string) ?? ''; // e.g. spaces/A/threads/C
+  const text = (asStr(message.argumentText) || asStr(message.text)).trim();
+  return {
+    kind: 'classic',
+    isMessage: event.type === 'MESSAGE' && !!event.message,
+    text,
+    senderUserId: stripUser(asStr(sender.name)),
+    threadName: asStr(thread.name),
+    messageName: asStr(message.name),
+  };
+}
 
-  const chatUserId = senderName.startsWith('users/') ? senderName.slice('users/'.length) : senderName;
-  const employee = chatUserId ? await ctx.employees.findByChatUserId(chatUserId) : null;
+/** Build the HTTP response body appropriate for the event format. */
+function formatReply(kind: EventKind, reply: string | null): Record<string, unknown> {
+  if (!reply) return emptyReply(kind);
+  if (kind === 'addon') {
+    return {
+      hostAppDataAction: {
+        chatDataAction: { createMessageAction: { message: { text: reply } } },
+      },
+    };
+  }
+  return { text: reply };
+}
+
+function emptyReply(_kind: EventKind): Record<string, unknown> {
+  return {};
+}
+
+/** Process a normalized MESSAGE event; returns an optional synchronous reply. */
+async function handleMessage(ctx: AppContext, ev: NormalizedEvent): Promise<string | null> {
+  const { text, senderUserId, threadName } = ev;
+  const employee = senderUserId ? await ctx.employees.findByChatUserId(senderUserId) : null;
 
   // Slash commands take priority.
   const commandReply = await handleCommand(ctx, text, employee);
@@ -120,14 +182,14 @@ async function handleMessage(
   if (!open) {
     // Not a check-in reply (e.g. a direct @mention). Give a short friendly ack
     // so the interaction never looks unanswered.
-    logger.info('Mention/ack (no active check-in thread)', { senderName, threadName });
+    logger.info('Mention/ack (no active check-in thread)', { senderUserId, threadName });
     return "👋 Hi! I'm here. Try /ping or /help 😄";
   }
 
   // Only the designated employee for this check-in completes the session.
   if (!employee || open.employeeId !== employee.id) {
-    await ctx.checkIns.addMessage(open.id, 'SYSTEM', `Ignored reply from ${senderName}`);
-    logger.info('Ignored non-designated reply in thread', { threadName, senderName });
+    await ctx.checkIns.addMessage(open.id, 'SYSTEM', `Ignored reply from users/${senderUserId}`);
+    logger.info('Ignored non-designated reply in thread', { threadName, senderUserId });
     return null;
   }
 

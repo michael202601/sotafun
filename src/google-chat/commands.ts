@@ -58,8 +58,8 @@ async function personalReport(ctx: AppContext, employee: Employee | null): Promi
   if (!mine) return 'Hôm nay chưa có thống kê — ngày còn dài mà 😄';
   return [
     `📊 Thống kê của bạn ngày ${day}`,
-    `Số check-in: ${mine.totalCheckIns}`,
-    `Đã trả lời: ${mine.responses}`,
+    `Số lần Lisa hỏi thăm: ${mine.totalCheckIns}`,
+    `Số lần phản hồi: ${mine.responses}`,
     `Tỉ lệ phản hồi: ${mine.responseRate.toFixed(1)}%`,
     `Thời gian phản hồi trung bình: ${TimeService.formatLeadTime(mine.averageLeadTime)}`,
     'Cố lên nhé! 🎉',

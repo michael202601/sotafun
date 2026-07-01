@@ -146,19 +146,19 @@ export class ReportService {
     },
   ): string {
     const lines = [
-      '📊 Báo cáo Wellness hằng ngày',
+      '📊 Báo cáo độ sẵn sàng hằng ngày',
       `Ngày: ${day}`,
       `Nhân viên: ${name}`,
-      `Số check-in: ${d.total}`,
-      `Đã trả lời: ${d.responses}`,
-      `Bỏ lỡ: ${d.misses}`,
+      `Số lần Lisa hỏi thăm: ${d.total}`,
+      `Số lần phản hồi: ${d.responses}`,
+      `Số lần lỡ mất: ${d.misses}`,
       `Tỉ lệ phản hồi: ${d.responseRate.toFixed(1)}%`,
-      `Phản hồi trung bình: ${TimeService.formatLeadTime(d.avg)}`,
-      `Nhanh nhất: ${TimeService.formatLeadTime(d.fastest)}`,
-      `Chậm nhất: ${TimeService.formatLeadTime(d.longest)}`,
+      `Thời gian phản hồi trung bình: ${TimeService.formatLeadTime(d.avg)}`,
+      `Lần nhanh nhất: ${TimeService.formatLeadTime(d.fastest)}`,
+      `Lần lâu nhất: ${TimeService.formatLeadTime(d.longest)}`,
     ];
     if (d.aiSummary) {
-      lines.push('', `Tóm tắt AI: ${d.aiSummary}`);
+      lines.push('', `💬 Lisa nhận xét: ${d.aiSummary}`);
     }
     return lines.join('\n');
   }

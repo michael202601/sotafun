@@ -25,6 +25,17 @@ async function isAuthentic(ctx: AppContext, req: Request): Promise<boolean> {
   return qToken === expected || bearer === expected;
 }
 
+/** Max time to wait for an AI reply to a direct mention before falling back. */
+const MENTION_AI_TIMEOUT_MS = 12000;
+
+/** Resolve `null` if the promise does not settle within `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    p,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 /** Bounded set of processed event/message ids for idempotency. */
 const processed = new Set<string>();
 const PROCESSED_MAX = 5000;
@@ -60,11 +71,6 @@ export function createWebhookHandler(ctx: AppContext) {
 
       const event = (req.body ?? {}) as Record<string, unknown>;
       const norm = normalizeEvent(event);
-      logger.info('Inbound webhook', {
-        kind: norm.kind,
-        isMessage: norm.isMessage,
-        hasText: !!norm.text,
-      });
 
       if (!norm.isMessage) {
         res.status(200).json(emptyReply(norm.kind));
@@ -180,9 +186,16 @@ async function handleMessage(ctx: AppContext, ev: NormalizedEvent): Promise<stri
   // A reply only counts when it lands inside a thread the bot created.
   const open = threadName ? await ctx.checkIns.findOpenByThread(threadName) : null;
   if (!open) {
-    // Not a check-in reply (e.g. a direct @mention). Give a short friendly ack
-    // so the interaction never looks unanswered.
-    logger.info('Mention/ack (no active check-in thread)', { senderUserId, threadName });
+    // Not a check-in reply (e.g. a direct @mention): reply naturally with AI,
+    // but cap the wait so Google Chat never times out; fall back to a friendly line.
+    logger.info('Mention -> AI reply', { senderUserId, threadName });
+    if (text) {
+      const aiReply = await withTimeout(
+        ctx.ai.generateFollowUp([{ role: 'EMPLOYEE', text }]),
+        MENTION_AI_TIMEOUT_MS,
+      );
+      if (aiReply) return aiReply;
+    }
     return '👋 Chào bạn! Mình đây. Thử /ping hoặc /help nhé 😄';
   }
 

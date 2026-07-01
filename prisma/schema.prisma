@@ -1,0 +1,140 @@
+// Google Chat Wellness Bot - Prisma schema (SQLite)
+// See docs/Database.md for the domain description.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Employees who receive periodic wellness check-ins.
+model Employee {
+  id               String   @id @default(cuid())
+  name             String
+  email            String   @unique
+  googleChatUserId String?  @unique
+  timezone         String   @default("Asia/Seoul")
+  workStart        String   @default("02:00")
+  workEnd          String   @default("11:00")
+  lunchStart       String   @default("04:00")
+  lunchEnd         String   @default("05:00")
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  checkIns     CheckIn[]
+  dailyReports DailyReport[]
+
+  @@index([enabled])
+}
+
+/// One record per scheduled check-in.
+model CheckIn {
+  id              String    @id @default(cuid())
+  employeeId      String
+  scheduledTime   DateTime
+  firstMessageTime DateTime?
+  replyTime       DateTime?
+  leadTimeSeconds Int?
+  status          String    @default("OPEN") // OPEN | RESPONDED | MISSED | EXPIRED
+  state           String    @default("IDLE") // IDLE | WAITING | REMINDER_1..3 | RESPONDED | MISSED | EXPIRED
+  messageId       String?
+  conversationId  String? // Google Chat thread name
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  employee Employee  @relation(fields: [employeeId], references: [id])
+  reminders Reminder[]
+  messages  MessageHistory[]
+
+  @@unique([employeeId, scheduledTime])
+  @@index([status])
+  @@index([scheduledTime])
+}
+
+/// Reminder history for a check-in (levels 1-3).
+model Reminder {
+  id        String   @id @default(cuid())
+  checkInId String
+  level     Int
+  message   String
+  sentAt    DateTime @default(now())
+
+  checkIn CheckIn @relation(fields: [checkInId], references: [id])
+
+  @@unique([checkInId, level])
+  @@index([checkInId])
+}
+
+/// Every message exchanged, for full conversation reconstruction.
+model MessageHistory {
+  id        String   @id @default(cuid())
+  checkInId String?
+  direction String // BOT | EMPLOYEE | SYSTEM
+  message   String
+  createdAt DateTime @default(now())
+
+  checkIn CheckIn? @relation(fields: [checkInId], references: [id])
+
+  @@index([checkInId])
+}
+
+/// Generated AI content, used to avoid repetition within N days.
+model AIMessageHistory {
+  id          String   @id @default(cuid())
+  employeeId  String?
+  category    String
+  title       String?
+  summary     String
+  message     String
+  hash        String
+  used        Boolean  @default(false)
+  generatedAt DateTime @default(now())
+  usedAt      DateTime?
+
+  @@index([category])
+  @@index([hash])
+  @@index([generatedAt])
+}
+
+/// Daily per-employee aggregated statistics.
+model DailyReport {
+  id              String   @id @default(cuid())
+  date            String // YYYY-MM-DD (Asia/Seoul business day)
+  employeeId      String
+  totalCheckIns   Int      @default(0)
+  responses       Int      @default(0)
+  misses          Int      @default(0)
+  averageLeadTime Int      @default(0) // seconds
+  longestLeadTime Int      @default(0) // seconds
+  fastestLeadTime Int      @default(0) // seconds
+  responseRate    Float    @default(0)
+  aiSummary       String?
+  generatedAt     DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@unique([date, employeeId])
+  @@index([date])
+}
+
+/// Important application events.
+model SystemLog {
+  id        String   @id @default(cuid())
+  level     String
+  module    String
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Global key/value configuration.
+model Settings {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

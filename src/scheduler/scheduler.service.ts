@@ -1,0 +1,169 @@
+import cron, { ScheduledTask } from 'node-cron';
+import type { AppContext } from '../app/context';
+import type { CheckIn, Employee } from '@prisma/client';
+import { getLogger } from '../utils/logger';
+
+const logger = getLogger('scheduler');
+
+/**
+ * Core scheduling engine. Runs a lightweight tick every minute to create
+ * check-ins and drive reminders/timeouts. All durable state lives in the DB,
+ * so the scheduler recovers automatically after a restart.
+ */
+export class SchedulerService {
+  private task: ScheduledTask | null = null;
+  private running = false;
+
+  constructor(
+    private readonly ctx: AppContext,
+    private readonly onReport: () => Promise<void>,
+  ) {}
+
+  start(): void {
+    // Every minute (docs: do not rely on Linux cron, use node-cron).
+    this.task = cron.schedule('* * * * *', () => {
+      void this.tick();
+    });
+    logger.info('Scheduler started');
+  }
+
+  stop(): void {
+    this.task?.stop();
+    this.task = null;
+  }
+
+  /** One scheduling tick. Guarded so overlapping runs never stack up. */
+  async tick(now: Date = new Date()): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    try {
+      await this.createDueCheckIns(now);
+      await this.processReminders(now);
+      await this.maybeRunReport(now);
+    } catch (err) {
+      logger.error('Scheduler tick failed', { error: (err as Error).message });
+    } finally {
+      this.running = false;
+    }
+  }
+
+  // --- Check-in creation -------------------------------------------------
+
+  private async createDueCheckIns(now: Date): Promise<void> {
+    if (!this.ctx.time.canScheduleCheckIn(now)) return;
+
+    const interval = this.ctx.env.CHECK_INTERVAL;
+    const slots = this.ctx.time.checkInSlots(now, interval);
+    // The single slot due in this tick window: now-interval < slot <= now.
+    const windowStart = now.getTime() - interval * 60 * 1000;
+    const due = slots.filter((s) => s.at.getTime() <= now.getTime() && s.at.getTime() > windowStart);
+    if (!due.length) return;
+
+    const employees = await this.ctx.employees.listEnabled();
+    for (const slot of due) {
+      for (const employee of employees) {
+        await this.openCheckIn(employee, slot.at);
+      }
+    }
+  }
+
+  private async openCheckIn(employee: Employee, scheduledTime: Date): Promise<void> {
+    if (await this.ctx.checkIns.existsForSlot(employee.id, scheduledTime)) return;
+    const checkIn = await this.ctx.checkIns.createForSlot(employee.id, scheduledTime);
+    if (!checkIn) return; // race -> already created
+
+    try {
+      const content = await this.ctx.ai.generateCheckIn(employee.id);
+      const sent = await this.ctx.chat.sendNewThread(
+        this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE,
+        content.message,
+      );
+      await this.ctx.checkIns.markSent(checkIn.id, sent.messageId, sent.threadId);
+      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', content.message);
+      logger.info('Check-in sent', { employee: employee.name, category: content.category });
+    } catch (err) {
+      logger.error('Failed to send check-in', {
+        employee: employee.name,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  // --- Reminders & timeouts ---------------------------------------------
+
+  private thresholds(): { r1: number; r2: number; r3: number; missed: number } {
+    const f = this.ctx.env.FIRST_REMINDER;
+    const s = this.ctx.env.SECOND_REMINDER;
+    const t = this.ctx.env.THIRD_REMINDER;
+    return { r1: f, r2: f + s, r3: f + s + t, missed: f + s + t + t };
+  }
+
+  private async processReminders(now: Date): Promise<void> {
+    const active = await this.ctx.checkIns.findActive();
+    for (const checkIn of active) {
+      if (!checkIn.firstMessageTime) continue; // not sent yet
+      await this.advanceReminder(checkIn, now);
+    }
+  }
+
+  private async advanceReminder(checkIn: CheckIn, now: Date): Promise<void> {
+    const elapsedMin = (now.getTime() - checkIn.firstMessageTime!.getTime()) / 60000;
+    const { r1, r2, r3, missed } = this.thresholds();
+
+    const reminders = await this.ctx.checkIns.listReminders(checkIn.id);
+    const sentLevels = new Set(reminders.map((r) => r.level));
+
+    if (elapsedMin >= missed) {
+      await this.ctx.checkIns.markMissed(checkIn.id);
+      await this.ctx.checkIns.addMessage(checkIn.id, 'SYSTEM', 'Marked as MISSED (timeout)');
+      logger.info('Check-in missed', { checkInId: checkIn.id });
+      return;
+    }
+
+    let level: 1 | 2 | 3 | null = null;
+    if (elapsedMin >= r3 && !sentLevels.has(3)) level = 3;
+    else if (elapsedMin >= r2 && !sentLevels.has(2)) level = 2;
+    else if (elapsedMin >= r1 && !sentLevels.has(1)) level = 1;
+    if (!level) return;
+
+    await this.sendReminder(checkIn, level);
+  }
+
+  private async sendReminder(checkIn: CheckIn, level: 1 | 2 | 3): Promise<void> {
+    // Reserve the slot first (unique constraint) to guarantee no duplicates,
+    // even across restarts or overlapping ticks.
+    const message = await this.ctx.ai.generateReminder(level);
+    const reserved = await this.ctx.checkIns.addReminder(checkIn.id, level, message);
+    if (!reserved) return; // already sent
+
+    try {
+      if (checkIn.conversationId) {
+        await this.ctx.chat.replyInThread(
+          this.ctx.env.GOOGLE_CHAT_EMPLOYEE_SPACE,
+          checkIn.conversationId,
+          message,
+        );
+      }
+      await this.ctx.checkIns.setState(checkIn.id, `REMINDER_${level}` as const);
+      await this.ctx.checkIns.addMessage(checkIn.id, 'BOT', message);
+      logger.info('Reminder sent', { checkInId: checkIn.id, level });
+    } catch (err) {
+      logger.error('Failed to send reminder', {
+        checkInId: checkIn.id,
+        level,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  // --- Daily report trigger ---------------------------------------------
+
+  private async maybeRunReport(now: Date): Promise<void> {
+    const business = this.ctx.time.nowBusiness();
+    const hhmm = business.toFormat('HH:mm');
+    if (hhmm !== this.ctx.env.REPORT_TIME) return;
+    logger.info('Report time reached', { time: hhmm });
+    await this.onReport();
+    void now;
+  }
+}

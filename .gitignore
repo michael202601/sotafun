@@ -1,0 +1,12 @@
+node_modules
+dist
+logs
+cache
+backups
+data
+.env
+*.db
+*.db-journal
+database.db
+coverage
+.DS_Store

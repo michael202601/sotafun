@@ -1,0 +1,15 @@
+node_modules
+dist
+logs
+cache
+backups
+data
+.env
+*.db
+database.db
+coverage
+.git
+.gitignore
+docs
+tasks
+.DS_Store

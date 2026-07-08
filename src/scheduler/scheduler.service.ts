@@ -111,6 +111,7 @@ export class SchedulerService {
   }
 
   private async processReminders(now: Date): Promise<void> {
+    if (this.ctx.time.isUsWeekend(now)) return; // stay silent on US weekends
     const active = await this.ctx.checkIns.findActive();
     for (const checkIn of active) {
       if (!checkIn.firstMessageTime) continue; // not sent yet
@@ -213,11 +214,11 @@ export class SchedulerService {
   // --- Daily report trigger ---------------------------------------------
 
   private async maybeRunReport(now: Date): Promise<void> {
+    if (this.ctx.time.isUsWeekend(now)) return; // no report on US weekends
     const business = this.ctx.time.nowBusiness();
     const hhmm = business.toFormat('HH:mm');
     if (hhmm !== this.ctx.env.REPORT_TIME) return;
     logger.info('Report time reached', { time: hhmm });
     await this.onReport();
-    void now;
   }
 }
